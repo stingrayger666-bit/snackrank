@@ -660,7 +660,7 @@ export async function createReviewForUser({
       const reviewRecord = await tx.review.create({
         data: {
           userId: user?.id ?? null,
-          userName: user ? user.name : anonymousVisitor.name,
+          userName: user ? user.name : (anonymousVisitor?.name ?? "匿名"),
           isAnonymous: !user,
           product,
           category,
