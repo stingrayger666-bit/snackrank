@@ -2,11 +2,11 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { pointRewards } from '@/app/lib/point-activities';
-import type { PointRedemption, User } from '@/app/lib/types';
+import type { PointRedemption, RewardActivity, User } from '@/app/lib/types';
 
 export default function RewardsPage() {
   const [user, setUser] = useState<User | null>(null);
+  const [rewards, setRewards] = useState<RewardActivity[]>([]);
   const [redemptions, setRedemptions] = useState<PointRedemption[]>([]);
   const [message, setMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -15,13 +15,18 @@ export default function RewardsPage() {
   useEffect(() => {
     fetch('/api/rewards', { cache: 'no-store' })
       .then(async (response) => {
-        const result = (await response.json()) as { user?: User; redemptions?: PointRedemption[] };
-        if (response.ok) {
-          setUser(result.user ?? null);
-          setRedemptions(result.redemptions ?? []);
-        }
+        const result = await response.json() as {
+          error?: string;
+          user?: User | null;
+          rewards?: RewardActivity[];
+          redemptions?: PointRedemption[];
+        };
+        if (!response.ok) throw new Error(result.error ?? '無法載入兌換活動。');
+        setUser(result.user ?? null);
+        setRewards(result.rewards ?? []);
+        setRedemptions(result.redemptions ?? []);
       })
-      .catch(() => setMessage('無法載入兌換項目，請稍後再試。'))
+      .catch((error) => setMessage(error instanceof Error ? error.message : '無法載入兌換項目，請稍後再試。'))
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -70,9 +75,10 @@ export default function RewardsPage() {
       {message ? <p className={message.includes('已建立') ? 'form-success' : 'form-error'}>{message}</p> : null}
       {!user ? <p>登入後即可使用積分兌換或參加抽獎。</p> : null}
       {isLoading ? <p>載入兌換項目中...</p> : null}
+      {!isLoading && rewards.length === 0 ? <p>目前沒有開放中的積分兌換活動。</p> : null}
 
       <div className="activity-grid">
-        {pointRewards.map((reward) => (
+        {rewards.map((reward) => (
           <div key={reward.id} className="card activity-card">
             <div className="product-topline"><span className="tag">兌換申請</span><strong>{reward.points} 點</strong></div>
             <h2>{reward.name}</h2>

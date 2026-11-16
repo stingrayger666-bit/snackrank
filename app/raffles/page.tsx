@@ -2,11 +2,11 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { raffles } from '@/app/lib/point-activities';
-import type { RaffleEntry, User } from '@/app/lib/types';
+import type { RaffleActivity, RaffleEntry, User } from '@/app/lib/types';
 
 export default function RafflesPage() {
   const [user, setUser] = useState<User | null>(null);
+  const [raffles, setRaffles] = useState<RaffleActivity[]>([]);
   const [entries, setEntries] = useState<RaffleEntry[]>([]);
   const [message, setMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -15,13 +15,18 @@ export default function RafflesPage() {
   useEffect(() => {
     fetch('/api/raffles', { cache: 'no-store' })
       .then(async (response) => {
-        const result = (await response.json()) as { user?: User; entries?: RaffleEntry[] };
-        if (response.ok) {
-          setUser(result.user ?? null);
-          setEntries(result.entries ?? []);
-        }
+        const result = await response.json() as {
+          error?: string;
+          user?: User | null;
+          raffles?: RaffleActivity[];
+          entries?: RaffleEntry[];
+        };
+        if (!response.ok) throw new Error(result.error ?? '無法載入抽獎活動。');
+        setUser(result.user ?? null);
+        setRaffles(result.raffles ?? []);
+        setEntries(result.entries ?? []);
       })
-      .catch(() => setMessage('無法載入抽獎活動，請稍後再試。'))
+      .catch((error) => setMessage(error instanceof Error ? error.message : '無法載入抽獎活動，請稍後再試。'))
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -69,23 +74,28 @@ export default function RafflesPage() {
       {!user ? <p>登入後即可參加抽獎並使用積分兌換。</p> : null}
 
       {isLoading ? <p>載入活動中...</p> : null}
+      {!isLoading && raffles.length === 0 ? <p>目前沒有開放中的抽獎活動。</p> : null}
       <div className="activity-grid">
         {raffles.map((raffle) => (
           <div key={raffle.id} className="card activity-card">
             <div className="product-topline">
-              <span className="tag">{raffle.status}</span>
+              <span className="tag">開放中</span>
               <strong>{raffle.points} 點</strong>
             </div>
             <h2>{raffle.name}</h2>
             <p>參加後將從兌換與抽獎共用的積分餘額扣除。</p>
-            <button
-              type="button"
-              className="button primary"
-              disabled={!user || isLoading || joiningId !== '' || user.points < raffle.points}
-              onClick={() => void handleJoin(raffle.id)}
-            >
-              {joiningId === raffle.id ? '處理中...' : user && user.points < raffle.points ? '積分不足' : '參加抽獎'}
-            </button>
+            {user ? (
+              <button
+                type="button"
+                className="button primary"
+                disabled={isLoading || joiningId !== '' || user.points < raffle.points}
+                onClick={() => void handleJoin(raffle.id)}
+              >
+                {joiningId === raffle.id ? '處理中...' : user.points < raffle.points ? '積分不足' : '參加抽獎'}
+              </button>
+            ) : (
+              <Link href="/login" className="button secondary">登入後參加</Link>
+            )}
           </div>
         ))}
       </div>

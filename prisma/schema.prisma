@@ -77,6 +77,33 @@ model Redemption {
   @@index([userId])
 }
 
+model RaffleActivity {
+  id        String   @id @default(uuid())
+  name      String
+  points    Int
+  isActive  Boolean  @default(true)
+  startsAt  DateTime?
+  endsAt    DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, startsAt, endsAt])
+}
+
+model RewardActivity {
+  id          String   @id @default(uuid())
+  name        String
+  points      Int
+  description String
+  isActive    Boolean  @default(true)
+  startsAt    DateTime?
+  endsAt      DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive, startsAt, endsAt])
+}
+
 model AnonymousVisitor {
   id        String   @id @default(uuid())
   ipHash    String

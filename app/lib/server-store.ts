@@ -91,6 +91,10 @@ function createAnonymousName(database: Database, excludedVisitorId?: string, pre
       )
       .map((visitor) => visitor.name),
   );
+  return chooseAnonymousName(existingNames, previousName);
+}
+
+function chooseAnonymousName(existingNames: Set<string>, previousName?: string) {
   if (previousName) existingNames.add(previousName);
 
   const availableNames: string[] = [];
@@ -108,6 +112,18 @@ function createAnonymousName(database: Database, excludedVisitorId?: string, pre
   return availableNames[randomInt(availableNames.length)];
 }
 
+async function createPrismaAnonymousName(excludedVisitorId?: string, previousName?: string) {
+  const now = new Date();
+  const visitors = await prisma.anonymousVisitor.findMany({
+    where: {
+      ...(excludedVisitorId ? { id: { not: excludedVisitorId } } : {}),
+      OR: [{ used: true }, { expiresAt: { gt: now } }],
+    },
+    select: { name: true },
+  });
+  return chooseAnonymousName(new Set(visitors.map((visitor) => visitor.name)), previousName);
+}
+
 function toPublicAnonymousVisitor(visitor: AnonymousVisitor) {
   return {
     id: visitor.id,
@@ -115,6 +131,21 @@ function toPublicAnonymousVisitor(visitor: AnonymousVisitor) {
     redraws: visitor.redraws,
     redrawsRemaining: 10 - visitor.redraws,
     expiresAt: visitor.expiresAt,
+  };
+}
+
+function toPublicAnonymousVisitorFromPrisma(visitor: {
+  id: string;
+  name: string;
+  redraws: number;
+  expiresAt: Date;
+}) {
+  return {
+    id: visitor.id,
+    name: visitor.name,
+    redraws: visitor.redraws,
+    redrawsRemaining: 10 - visitor.redraws,
+    expiresAt: visitor.expiresAt.toISOString(),
   };
 }
 
@@ -146,7 +177,7 @@ function toPublicUser(user: StoredUser): User {
   return publicUser;
 }
 
-function toPublicUserFromPrisma(user: {
+export function toPublicUserFromPrisma(user: {
   id: string;
   name: string;
   email: string;
@@ -199,6 +230,14 @@ function toReviewFromPrisma(review: {
     imageUrl: review.imageUrl ?? undefined,
     imageUrls: review.imageUrls ? review.imageUrls.split('|') : undefined,
     createdAt: review.createdAt.toISOString(),
+  };
+}
+
+export async function getLegacyEntityIds() {
+  const database = await readDatabase();
+  return {
+    userIds: database.users.map((user) => user.id),
+    reviewIds: database.reviews.map((review) => review.id),
   };
 }
 
@@ -390,6 +429,18 @@ export async function getUserById(userId: string) {
 }
 
 export async function createAnonymousReservation(ipHash: string) {
+  if (process.env.DATABASE_URL && process.env.USE_LEGACY_JSON !== 'true') {
+    const now = new Date();
+    const visitor = await prisma.anonymousVisitor.create({
+      data: {
+        ipHash,
+        name: await createPrismaAnonymousName(),
+        expiresAt: new Date(now.getTime() + 30 * 60 * 1000),
+      },
+    });
+    return toPublicAnonymousVisitorFromPrisma(visitor);
+  }
+
   return updateDatabase((database) => {
     const now = Date.now();
     const visitors = (database.anonymousVisitors ?? []).filter(
@@ -411,6 +462,35 @@ export async function createAnonymousReservation(ipHash: string) {
 }
 
 export async function redrawAnonymousName(ipHash: string, reservationId: string) {
+  if (process.env.DATABASE_URL && process.env.USE_LEGACY_JSON !== 'true') {
+    const now = new Date();
+    const visitor = await prisma.anonymousVisitor.findFirst({
+      where: { id: reservationId, ipHash },
+    });
+    if (!visitor || visitor.used || visitor.expiresAt <= now) {
+      return { error: 'reservation_expired' as const };
+    }
+    if (visitor.redraws >= 10) return { error: 'redraw_limit' as const };
+
+    const name = await createPrismaAnonymousName(reservationId, visitor.name);
+    const updated = await prisma.anonymousVisitor.updateMany({
+      where: {
+        id: reservationId,
+        ipHash,
+        used: false,
+        expiresAt: { gt: now },
+        redraws: visitor.redraws,
+      },
+      data: { name, redraws: { increment: 1 } },
+    });
+    if (updated.count === 0) return { error: 'reservation_expired' as const };
+
+    const updatedVisitor = await prisma.anonymousVisitor.findUniqueOrThrow({
+      where: { id: reservationId },
+    });
+    return { identity: toPublicAnonymousVisitorFromPrisma(updatedVisitor) };
+  }
+
   return updateDatabase((database) => {
     const visitors = database.anonymousVisitors ?? [];
     const visitor = visitors.find((item) => item.id === reservationId && item.ipHash === ipHash);
@@ -430,10 +510,21 @@ export async function redrawAnonymousName(ipHash: string, reservationId: string)
 export async function getReviews() {
   if (process.env.DATABASE_URL && process.env.USE_LEGACY_JSON !== 'true') {
     try {
-      const reviews = await prisma.review.findMany({
-        orderBy: { createdAt: 'desc' },
-      });
-      return reviews.map(toReviewFromPrisma);
+      const [reviews, database] = await Promise.all([
+        prisma.review.findMany({
+          orderBy: { createdAt: 'desc' },
+        }),
+        readDatabase(),
+      ]);
+      const reviewsById = new Map(
+        database.reviews.map((review) => [review.id, review] as const),
+      );
+      for (const review of reviews.map(toReviewFromPrisma)) {
+        reviewsById.set(review.id, review);
+      }
+      return [...reviewsById.values()].sort(
+        (left, right) => right.createdAt.localeCompare(left.createdAt),
+      );
     } catch {
       // fallback to legacy JSON
     }
@@ -514,158 +605,6 @@ export async function getPointActivities(userId: string) {
   };
 }
 
-export async function enterRaffleForUser({
-  userId,
-  raffleId,
-  raffleName,
-  points,
-}: {
-  userId: string;
-  raffleId: string;
-  raffleName: string;
-  points: number;
-}) {
-  if (process.env.DATABASE_URL && process.env.USE_LEGACY_JSON !== 'true') {
-    try {
-      const user = await prisma.user.findUnique({ where: { id: userId } });
-      if (!user) return { error: 'user_not_found' as const };
-      if (user.points < points) return { error: 'insufficient_points' as const, balance: user.points };
-
-      const [updatedUser, entry] = await prisma.$transaction(async (tx) => {
-        const updated = await tx.user.update({
-          where: { id: userId },
-          data: {
-            points: { decrement: points },
-            level: getLevelFromExperience(user.experience),
-          },
-        });
-        const entryData = await tx.raffleEntry.create({
-          data: {
-            raffleId,
-            raffleName,
-            userId,
-            pointsSpent: points,
-            status: '待抽獎',
-          },
-        });
-        return [updated, entryData] as const;
-      });
-
-      return {
-        entry: {
-          id: entry.id,
-          raffleId: entry.raffleId,
-          raffleName: entry.raffleName,
-          userId: entry.userId,
-          pointsSpent: entry.pointsSpent,
-          status: entry.status,
-          createdAt: entry.createdAt.toISOString(),
-        },
-        user: toPublicUserFromPrisma(updatedUser),
-      };
-    } catch {
-      // fallback to legacy JSON
-    }
-  }
-
-  return updateDatabase((database) => {
-    const user = database.users.find((item) => item.id === userId);
-    if (!user) return { error: 'user_not_found' as const };
-    if (user.points < points) return { error: 'insufficient_points' as const, balance: user.points };
-
-    const entry: RaffleEntry = {
-      id: randomUUID(),
-      raffleId,
-      raffleName,
-      userId,
-      pointsSpent: points,
-      status: '待抽獎',
-      createdAt: new Date().toISOString(),
-    };
-    user.points -= points;
-    user.level = getLevelFromExperience(user.experience);
-    database.raffleEntries = [...(database.raffleEntries ?? []), entry];
-
-    return { entry, user: toPublicUser(user) };
-  });
-}
-
-export async function redeemRewardForUser({
-  userId,
-  rewardId,
-  rewardName,
-  points,
-}: {
-  userId: string;
-  rewardId: string;
-  rewardName: string;
-  points: number;
-}) {
-  if (process.env.DATABASE_URL && process.env.USE_LEGACY_JSON !== 'true') {
-    try {
-      const user = await prisma.user.findUnique({ where: { id: userId } });
-      if (!user) return { error: 'user_not_found' as const };
-      if (user.points < points) return { error: 'insufficient_points' as const, balance: user.points };
-
-      const [updatedUser, redemption] = await prisma.$transaction(async (tx) => {
-        const updated = await tx.user.update({
-          where: { id: userId },
-          data: {
-            points: { decrement: points },
-            level: getLevelFromExperience(user.experience),
-          },
-        });
-        const redemptionData = await tx.redemption.create({
-          data: {
-            rewardId,
-            rewardName,
-            userId,
-            pointsSpent: points,
-            status: '待核發',
-          },
-        });
-        return [updated, redemptionData] as const;
-      });
-
-      return {
-        redemption: {
-          id: redemption.id,
-          rewardId: redemption.rewardId,
-          rewardName: redemption.rewardName,
-          userId: redemption.userId,
-          pointsSpent: redemption.pointsSpent,
-          status: redemption.status,
-          createdAt: redemption.createdAt.toISOString(),
-        },
-        user: toPublicUserFromPrisma(updatedUser),
-      };
-    } catch {
-      // fallback to legacy JSON
-    }
-  }
-
-  return updateDatabase((database) => {
-    const user = database.users.find((item) => item.id === userId);
-    if (!user) return { error: 'user_not_found' as const };
-    if (user.points < points) return { error: 'insufficient_points' as const, balance: user.points };
-
-    const redemption: PointRedemption = {
-      id: randomUUID(),
-      rewardId,
-      rewardName,
-      userId,
-      pointsSpent: points,
-      status: '待核發',
-      createdAt: new Date().toISOString(),
-    };
-    user.points -= points;
-    user.level = getLevelFromExperience(user.experience);
-    database.redemptions = [...(database.redemptions ?? []), redemption];
-
-    return { redemption, user: toPublicUser(user) };
-  });
-}
-
 export async function createReviewForUser({
   userId,
   anonymousIdentityId,
@@ -687,6 +626,76 @@ export async function createReviewForUser({
   content: string;
   imageUrls?: string[];
 }) {
+  if (process.env.DATABASE_URL && process.env.USE_LEGACY_JSON !== 'true') {
+    return prisma.$transaction(async (tx) => {
+      const user = userId ? await tx.user.findUnique({ where: { id: userId } }) : null;
+      const now = new Date();
+      const anonymousVisitor = !user && anonymousIdentityId && anonymousIpHash
+        ? await tx.anonymousVisitor.findFirst({
+            where: {
+              id: anonymousIdentityId,
+              ipHash: anonymousIpHash,
+              used: false,
+              expiresAt: { gt: now },
+            },
+          })
+        : null;
+
+      if (userId && !user) return { error: 'user_not_found' as const };
+      if (!user && !anonymousVisitor) return { error: 'anonymous_reservation_invalid' as const };
+
+      if (anonymousVisitor) {
+        const claimed = await tx.anonymousVisitor.updateMany({
+          where: {
+            id: anonymousVisitor.id,
+            ipHash: anonymousVisitor.ipHash,
+            used: false,
+            expiresAt: { gt: now },
+          },
+          data: { used: true },
+        });
+        if (claimed.count === 0) return { error: 'anonymous_reservation_invalid' as const };
+      }
+
+      const reviewRecord = await tx.review.create({
+        data: {
+          userId: user?.id ?? null,
+          userName: user ? user.name : anonymousVisitor.name,
+          isAnonymous: !user,
+          product,
+          category,
+          store,
+          rating,
+          content,
+          imageUrl: imageUrls?.[0] ?? null,
+          imageUrls: imageUrls?.join('|') || null,
+        },
+      });
+
+      const imageCount = imageUrls?.length ?? 0;
+      const experienceAwarded = user
+        ? 1 + (content ? 5 : 0) + (content.length > 20 ? 10 : 0) + imageCount * 5
+        : 0;
+      const updatedUser = user
+        ? await tx.user.update({
+            where: { id: user.id },
+            data: {
+              points: { increment: 5 + (content ? 10 : 0) + (imageCount > 0 ? 10 : 0) },
+              experience: { increment: experienceAwarded },
+              dailyExperience: { increment: experienceAwarded },
+              level: getLevelFromExperience(user.experience + experienceAwarded),
+            },
+          })
+        : null;
+
+      return {
+        review: toReviewFromPrisma(reviewRecord),
+        user: updatedUser ? toPublicUserFromPrisma(updatedUser) : null,
+        experienceAwarded,
+      };
+    });
+  }
+
   return updateDatabase((database) => {
     const user = userId ? database.users.find((item) => item.id === userId) : undefined;
     const anonymousVisitor = !user && anonymousIdentityId && anonymousIpHash

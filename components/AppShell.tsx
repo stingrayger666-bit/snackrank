@@ -17,15 +17,18 @@ const navItems = [
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [isActivityAdmin, setIsActivityAdmin] = useState(false);
 
   useEffect(() => {
     const refreshUser = async () => {
       try {
         const response = await fetch('/api/auth/me', { cache: 'no-store' });
-        const result = (await response.json()) as { user: User | null };
+        const result = (await response.json()) as { user: User | null; isActivityAdmin?: boolean };
         setUser(result.user);
+        setIsActivityAdmin(result.isActivityAdmin === true);
       } catch {
         setUser(null);
+        setIsActivityAdmin(false);
       }
     };
 
@@ -37,6 +40,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
     setUser(null);
+    setIsActivityAdmin(false);
     window.location.href = '/';
   };
 
@@ -55,6 +59,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               {item.label}
             </Link>
           ))}
+          {isActivityAdmin ? (
+            <Link href="/admin/activities" className="nav-link">活動管理</Link>
+          ) : null}
         </nav>
 
         <div className="auth-actions">

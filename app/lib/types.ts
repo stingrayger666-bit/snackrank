@@ -45,3 +45,18 @@ export type PointRedemption = {
   status: string;
   createdAt: string;
 };
+
+export type RaffleActivity = {
+  id: string;
+  name: string;
+  points: number;
+  isActive: boolean;
+  startsAt: string | null;
+  endsAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RewardActivity = RaffleActivity & {
+  description: string;
+};
