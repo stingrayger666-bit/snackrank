@@ -20,7 +20,8 @@ export async function POST(request: Request) {
     const response = NextResponse.json({ user });
     setSessionCookie(response, user.id);
     return response;
-  } catch {
+  } catch (error) {
+    console.error('login failed:', error);
     return NextResponse.json({ error: '無法登入，請稍後再試。' }, { status: 400 });
   }
 }
