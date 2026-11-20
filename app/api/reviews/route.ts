@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { mkdir, unlink, writeFile } from 'node:fs/promises';
-import path from 'node:path';
+import { createClient } from '@supabase/supabase-js';
 import { getAuthenticatedUser, getClientIpHash } from '@/app/lib/auth';
 import { reviewCategories } from '@/app/lib/review-categories';
 import { createReviewForUser, getReviews } from '@/app/lib/server-store';
@@ -11,6 +10,27 @@ export const dynamic = 'force-dynamic';
 const stores = new Set(['7-11', 'FamilyMart', 'OK Mart', '萊爾富']);
 const categories = new Set<string>(reviewCategories);
 const maxImageSize = 5 * 1024 * 1024;
+
+const photoBucket = 'review-photos';
+const imageContentTypes: Record<string, string> = {
+  jpg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+};
+
+function getSupabase() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be configured');
+  return createClient(url, key, { auth: { persistSession: false } });
+}
+
+async function removeUploadedPhotos(filenames: string[]) {
+  if (filenames.length === 0) return;
+  try {
+    await getSupabase().storage.from(photoBucket).remove(filenames);
+  } catch {}
+}
 
 function getImageExtension(type: string, bytes: Uint8Array) {
   if (type === 'image/jpeg' && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpg';
@@ -32,7 +52,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const imagePaths: string[] = [];
+  const uploadedFiles: string[] = [];
   try {
     const formData = await request.formData();
     const useAnonymous = formData.get('anonymous') === 'true';
@@ -86,15 +106,21 @@ export async function POST(request: Request) {
     }
 
     const imageUrls: string[] = [];
-    for (const image of validatedImages) {
-      const filename = `${randomUUID()}.${image.extension}`;
-      const imagePath = path.join(process.cwd(), '.data', 'uploads', filename);
-      await mkdir(path.dirname(imagePath), { recursive: true });
-      await writeFile(imagePath, image.bytes, { flag: 'wx' });
-      imagePaths.push(imagePath);
-      imageUrls.push(`/api/reviews/images/${filename}`);
-    }
-
+if (validatedImages.length > 0) {
+  const supabase = getSupabase();
+  const bucket = supabase.storage.from(photoBucket);
+  for (const image of validatedImages) {
+    const filename = `${randomUUID()}.${image.extension}`;
+    const { error: uploadError } = await bucket.upload(filename, image.bytes, {
+      contentType: imageContentTypes[image.extension],
+      cacheControl: '31536000',
+      upsert: false,
+    });
+    if (uploadError) throw uploadError;
+    uploadedFiles.push(filename);
+    imageUrls.push(bucket.getPublicUrl(filename).data.publicUrl);
+  }
+}
     const result = await createReviewForUser({
       userId: user?.id ?? null,
       anonymousIdentityId: user ? undefined : anonymousIdentityId as string,
@@ -107,7 +133,7 @@ export async function POST(request: Request) {
       imageUrls,
     });
     if ('error' in result) {
-      await Promise.all(imagePaths.map((imagePath) => unlink(imagePath).catch(() => {})));
+      await removeUploadedPhotos(uploadedFiles);
       if (result.error === 'anonymous_reservation_invalid') {
         return NextResponse.json({ error: '匿名名稱已使用或逾時，請重新取得名稱。' }, { status: 409 });
       }
@@ -116,7 +142,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json(result, { status: 201 });
   } catch {
-    await Promise.all(imagePaths.map((imagePath) => unlink(imagePath).catch(() => {})));
+    await removeUploadedPhotos(uploadedFiles);
     return NextResponse.json({ error: '無法發表評價，請稍後再試。' }, { status: 400 });
   }
 }
