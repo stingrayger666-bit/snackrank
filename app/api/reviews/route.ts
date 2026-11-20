@@ -141,7 +141,7 @@ if (validatedImages.length > 0) {
     }
 
     return NextResponse.json(result, { status: 201 });
-    } catch (error) {
+     } catch (error) {
     console.error('create review failed:', error);
     await removeUploadedPhotos(uploadedFiles);
     return NextResponse.json({ error: '無法發表評價，請稍後再試。' }, { status: 400 });
