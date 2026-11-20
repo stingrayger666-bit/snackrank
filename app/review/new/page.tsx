@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { FormEvent, useEffect, useState } from 'react';
 import { reviewCategories } from '@/app/lib/review-categories';
 import type { User } from '@/app/lib/types';
+import { compressImage } from '@/app/lib/compress-image';
 
 type AnonymousIdentity = {
   id: string;
@@ -84,8 +85,8 @@ export default function NewReviewPage() {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError('');
-    if (images.length > 5 || images.some((image) => image.size > 5 * 1024 * 1024)) {
-      setError('最多上傳 5 張圖片，每張不可超過 5 MB。');
+    if (images.length > 5 || images.some((image) => image.size > 25 * 1024 * 1024)) {
+      setError('最多上傳 5 張圖片，每張不可超過 25 MB。');
       return;
     }
 
@@ -101,7 +102,8 @@ export default function NewReviewPage() {
         formData.set('anonymous', 'true');
         formData.set('anonymousIdentityId', anonymousIdentity.id);
       }
-      images.forEach((image) => formData.append('images', image));
+      const compressedImages = await Promise.all(images.map((image) => compressImage(image)));
+      compressedImages.forEach((image) => formData.append('images', image));
 
       const response = await fetch('/api/reviews', {
         method: 'POST',
