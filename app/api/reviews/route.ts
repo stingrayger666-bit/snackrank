@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { getAuthenticatedUser, getClientIpHash } from '@/app/lib/auth';
 import { reviewCategories } from '@/app/lib/review-categories';
 import { createReviewForUser, getReviews } from '@/app/lib/server-store';
+import { isRateLimited, tooManyRequests } from '@/app/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
@@ -57,6 +58,11 @@ export async function POST(request: Request) {
     const formData = await request.formData();
     const useAnonymous = formData.get('anonymous') === 'true';
     const user = useAnonymous ? null : await getAuthenticatedUser();
+    const rateKey = user ? `user:${user.id}` : getClientIpHash(request);
+    if (await isRateLimited('review', rateKey, 10, 3600)) {
+      return tooManyRequests();
+    }
+
     const anonymousIdentityId = formData.get('anonymousIdentityId');
     if (!user && typeof anonymousIdentityId !== 'string') {
       return NextResponse.json({ error: '請先取得匿名名稱，再發表評價。' }, { status: 409 });

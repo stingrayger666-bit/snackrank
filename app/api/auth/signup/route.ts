@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
-import { setSessionCookie } from '@/app/lib/auth';
+import { getClientIpHash, setSessionCookie } from '@/app/lib/auth';
 import { createUser } from '@/app/lib/server-store';
+import { isRateLimited, tooManyRequests } from '@/app/lib/rate-limit';
 
 export async function POST(request: Request) {
   try {
@@ -21,6 +22,9 @@ export async function POST(request: Request) {
     }
     if (inviteCode && !/^[A-F0-9]{10}$/.test(inviteCode)) {
       return NextResponse.json({ error: '邀請碼格式不正確，請確認後再試。' }, { status: 400 });
+    }
+    if (await isRateLimited('signup-ip', getClientIpHash(request), 5, 3600)) {
+      return tooManyRequests();
     }
 
     const result = await createUser({ name, email, password, inviteCode });

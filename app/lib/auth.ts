@@ -21,7 +21,6 @@ export function getClientIpHash(request: Request) {
   const forwardedFor = request.headers.get('x-forwarded-for');
   const forwardedAddresses = forwardedFor?.split(',').map((address) => address.trim()).filter(Boolean);
   const clientAddress =
-    request.headers.get('cf-connecting-ip')?.trim() ||
     request.headers.get('x-real-ip')?.trim() ||
     forwardedAddresses?.[0] ||
     'unknown';
