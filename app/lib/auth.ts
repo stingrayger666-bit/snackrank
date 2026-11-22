@@ -81,7 +81,7 @@ export function clearSessionCookie(response: NextResponse) {
 }
 
 export async function getAuthenticatedUser(): Promise<User | null> {
-  const token = cookies().get(sessionCookieName)?.value;
+  const token = (await cookies()).get(sessionCookieName)?.value;
   if (!token) return null;
 
   const userId = readSession(token);

@@ -5,9 +5,10 @@ import { prisma } from '@/app/lib/prisma';
 
 export const dynamic = 'force-dynamic';
 
-type RouteContext = { params: { type: string; id: string } };
+type RouteContext = { params: Promise<{ type: string; id: string }> };
 
-export async function PATCH(request: Request, { params }: RouteContext) {
+export async function PATCH(request: Request, props: RouteContext) {
+  const params = await props.params;
   const user = await getAuthenticatedUser();
   if (!user) return NextResponse.json({ error: '請先登入管理員帳號。' }, { status: 401 });
   if (!isActivityAdmin(user.email)) {
